@@ -9,6 +9,7 @@ import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIDWorker;
 import com.hmdp.utils.UserHolder;
+import org.springframework.aop.framework.AopContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,7 +32,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedisIDWorker redisIDWorker;
     @Override
-    @Transactional
+
     public Result seckillVoucher(Long voucherId) {
         // 1. query the voucher
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
@@ -47,7 +48,28 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (voucher.getStock() < 1) {
             return Result.fail("库存不足！");
         }
-        // 5. subtract from the stock
+        Long userId = UserHolder.getUser().getId();
+        synchronized (userId.toString().intern()) {
+            // get the proxy object (transactional)
+            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+            return proxy.createVoucherOrder(voucherId);
+        }
+    }
+
+    @Transactional
+    public Result createVoucherOrder(Long voucherId) {
+        // 5 ensure same user only get the one voucher
+        // 5.1 query the order by userId and voucherId
+        Long userId = UserHolder.getUser().getId();
+        Integer count = query()
+                .eq("user_id", userId)
+                .eq("voucher_id", voucherId)
+                .count();
+        // 5.2 check the order exists or not
+        if (count > 0) {
+            return Result.fail("用户已经购买过了！");
+        }
+        // 6. subtract from the stock
         boolean success = seckillVoucherService.update()
                 .setSql("stock = stock - 1")
                 .eq("voucher_id", voucherId)
@@ -56,18 +78,21 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (!success) {
             return Result.fail("库存不足！");
         }
-        // 6. create order
+        // 7. create order
         VoucherOrder voucherOrder = new VoucherOrder();
-        // 6.1 set order id
+        // 7.1 set order id
         long orderId = redisIDWorker.nextId("order");
         voucherOrder.setId(orderId);
-        // 6.2 set user id
-        Long userId = UserHolder.getUser().getId();
+        // 7.2 set user id
+
         voucherOrder.setUserId(userId);
-        // 6.3 set voucher id
+        // 7.3 set voucher id
         voucherOrder.setVoucherId(voucherId);
         save(voucherOrder);
-        // 7. return
+
+        // 8. return
         return Result.ok(orderId);
+
+
     }
 }
