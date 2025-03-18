@@ -77,7 +77,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         }
         //String cacheCode = session.getAttribute("code").toString();
         // 1.1 get the code from redis
-        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_USER_KEY + phone);
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone);
         String code = loginForm.getCode();
         if (cacheCode == null || !code.equals(cacheCode)) {
             // 2. return error message if not
