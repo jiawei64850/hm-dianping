@@ -1,6 +1,8 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.bean.copier.CopyOptions;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
@@ -9,12 +11,20 @@ import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
+import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
@@ -28,6 +38,8 @@ import javax.servlet.http.HttpSession;
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
     /**
      * 发送验证码
      * @param phone
@@ -42,8 +54,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         }
         // 3. generate validation code if it does
         String code = RandomUtil.randomNumbers(6);
-        // 4. store the code into session
-        session.setAttribute("code", code);
+        // 4. store the code into redis --- set key value ex 120
+        // session.setAttribute("code", code);
+        stringRedisTemplate.opsForValue().set(LOGIN_USER_KEY + phone, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
         // 5. send the code
         log.debug("发送短信验证码成功, 验证码: {}", code);
         // 6. return ok
@@ -62,7 +75,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         if (RegexUtils.isPhoneInvalid(phone)) {
             return Result.fail("手机号格式错误！");
         }
-        String cacheCode = session.getAttribute("code").toString();
+        //String cacheCode = session.getAttribute("code").toString();
+        // 1.1 get the code from redis
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_USER_KEY + phone);
         String code = loginForm.getCode();
         if (cacheCode == null || !code.equals(cacheCode)) {
             // 2. return error message if not
@@ -75,9 +90,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             user = createUserWithPhone(phone);
         }
         // 5. store information of user into session (whatever is new or not)
-        session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
+        // session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
+        // 5. store information of user into redis (whatever is new or not)
+        // 5.1 generate token randomly as login authentication
+        String token = UUID.randomUUID().toString(true);
+        // 5.2 convert user object into hashMap format
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+        Map<String, Object> userMap = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((fieldName, fieldValue) -> fieldValue.toString()));
+        // 5.3 store it into redis
+        String tokenKey = LOGIN_USER_KEY + token;
+        stringRedisTemplate.opsForHash().putAll(tokenKey, userMap);
+        // 5.4 set the expired date for the redis
+        stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL, TimeUnit.MINUTES);
         // 6. return ok
-        return Result.ok();
+        return Result.ok(token);
     }
 
     /**
