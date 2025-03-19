@@ -10,6 +10,8 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIDWorker;
 import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -17,6 +19,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+
+import static com.hmdp.utils.RedisConstants.LOCK_ORDER_KEY;
 
 /**
  * <p>
@@ -35,6 +39,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private RedisIDWorker redisIDWorker;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private RedissonClient redissonClient;
+
     @Override
 
     public Result seckillVoucher(Long voucherId) {
@@ -59,9 +67,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 //            return proxy.createVoucherOrder(voucherId);
 //        }
         // create the object of mutex
-        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        //SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        RLock lock = redissonClient.getLock(LOCK_ORDER_KEY + userId);
         // get the mutex
-        boolean isLock = lock.tryLock(1200L);
+        boolean isLock = lock.tryLock();
         // check succeed or not
         if (!isLock) {
             return Result.fail("不能重复下单！");
