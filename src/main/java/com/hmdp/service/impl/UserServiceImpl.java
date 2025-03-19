@@ -14,11 +14,13 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
 import java.util.HashMap;
 import java.util.Map;
@@ -109,6 +111,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return Result.ok(token);
     }
 
+
+
     /**
      * 根据手机号注册新用户
      * @param phone
@@ -123,5 +127,21 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         // 3. store the user into database
         save(user);
         return user;
+    }
+
+    public Result logout(HttpServletRequest request) {
+        // 1. get user's nickname
+        String name = UserHolder.getUser().getNickName();
+        // 2. get token from request
+        String token = request.getHeader("Authorization");
+        // 3. splice the tokenKey
+        String tokenKey = LOGIN_USER_KEY + token;
+        // 4. delete tokenKey from redis
+        stringRedisTemplate.delete(tokenKey);
+
+        log.info("用户: {}, 登陆成功", name);
+        UserHolder.removeUser();
+        return Result.ok();
+
     }
 }
