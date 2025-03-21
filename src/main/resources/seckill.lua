@@ -3,6 +3,8 @@
 local voucherId = ARGV[1]
 -- 1.2 user id
 local userId = ARGV[2]
+-- 1.3 order id
+local orderId = ARGV[3]
 
 -- 2. data key
 -- 2.1 stock key
@@ -25,4 +27,6 @@ end
 redis.call('incrby', stockKey, -1)
 -- 3.6 store the user into redis -- take order
 redis.call('sadd', orderKey, userId)
+-- 3.7 send msg into message list
+redis.call('xadd', 'stream.orders', '*', 'voucherId', voucherId, 'userId', userId, 'id', orderId)
 return 0

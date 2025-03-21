@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
@@ -13,6 +14,7 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
@@ -20,13 +22,17 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
+import java.time.Duration;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import static com.hmdp.utils.RedisConstants.LOCK_ORDER_KEY;
+
 
 /**
  * <p>
@@ -57,25 +63,90 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedissonClient redissonClient;
 
-    private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+//    private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+//    public class VoucherOrderHandler implements Runnable {
+//        @Override
+//        public void run() {
+//            while (true) {
+//                try {
+//                    // 1. get the info of voucherOrder from list
+//                    VoucherOrder voucherOrder = orderTasks.take();
+//                    // 2. create the order
+//                    handleVoucherOrder(voucherOrder);
+//                } catch (InterruptedException e) {
+//                    log.info("处理订单异常", e);
+//                }
+//            }
+//        }
+//    }
     public static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
+    public static final String queueName = "stream.orders";
 
     @PostConstruct
     public void init() {
         SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
     }
-    public class VoucherOrderHandler implements Runnable {
 
+    public class VoucherOrderHandler implements Runnable {
         @Override
         public void run() {
             while (true) {
                 try {
-                    // 1. get the info of voucherOrder from list
-                    VoucherOrder voucherOrder = orderTasks.take();
-                    // 2. create the order
+                    // 1. get the info of voucherOrder from message list
+                    List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
+                            Consumer.from("g1", "c1"),
+                            StreamReadOptions.empty().count(1).block(Duration.ofSeconds(2)),
+                            StreamOffset.create(queueName, ReadOffset.lastConsumed())
+                    );
+                    // 2. check the result is successful or not
+                    if (list == null || list.isEmpty()) {
+                        // 2.1 continue next while loop if not (no abnormal message)
+                        continue;
+                    }
+                    // 3 create the order if it does
+                    // 3.1 parse the info of order from msg list
+                    MapRecord<String, Object, Object> record = list.get(0);
+                    Map<Object, Object> values = record.getValue();
+                    VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(values, new VoucherOrder(), true);
                     handleVoucherOrder(voucherOrder);
-                } catch (InterruptedException e) {
+                    // 4. ack
+                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
+                } catch (Exception e) {
                     log.info("处理订单异常", e);
+                    handlePendingList();
+                }
+            }
+        }
+    }
+
+    private void handlePendingList(){
+        while (true) {
+            try {
+                // 1. get the info of voucherOrder from pending list
+                List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
+                        Consumer.from("g1", "c1"),
+                        StreamReadOptions.empty().count(1),
+                        StreamOffset.create(queueName, ReadOffset.from("0"))
+                );
+                // 2. check the result is successful or not
+                if (list == null || list.isEmpty()) {
+                    // 2.1 break while loop if not (no abnormal message)
+                    break;
+                }
+                // 3 create the order if it does
+                // 3.1 parse the info of order from msg list
+                MapRecord<String, Object, Object> record = list.get(0);
+                Map<Object, Object> values = record.getValue();
+                VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(values, new VoucherOrder(), true);
+                handleVoucherOrder(voucherOrder);
+                // 4. ack
+                stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
+            } catch (Exception e) {
+                log.info("处理pending-list异常", e);
+                try {
+                    Thread.sleep(50);
+                } catch (Exception ex) {
+                    throw new RuntimeException(ex);
                 }
             }
         }
@@ -106,11 +177,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Override
     public Result seckillVoucher(Long voucherId) {
         Long userId = UserHolder.getUser().getId();
+        long orderId = redisIDWorker.nextId("order:");
         // 1. execute luas script
         Long result = stringRedisTemplate.execute(
                 SECKILL_SCRIPT,
                 Collections.emptyList(),
-                voucherId.toString(), userId.toString()
+                voucherId.toString(), userId.toString(), String.valueOf(orderId)
         );
         // 2. check if the result of script is 0 or not
         int r = result.intValue();
@@ -118,24 +190,46 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             // 2.1 not 0, have no purchase access
             return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
         }
-        // 2.2 0, have purchase access, put the order info into blocking queue
-        long orderId = redisIDWorker.nextId("order:");
-        // TODO blocking queue
-        // 2.3. create order
-        VoucherOrder voucherOrder = new VoucherOrder();
-        // 2.4 set order id
-        voucherOrder.setId(orderId);
-        // 2.5 set user id
-        voucherOrder.setUserId(userId);
-        // 2.6 set voucher id
-        voucherOrder.setVoucherId(voucherId);
-        // 2.7 add it into blocking queue
-        orderTasks.add(voucherOrder);
-        // 2.8 get the proxy object
+
+        // 2.1 get the proxy object
         proxy = (IVoucherOrderService) AopContext.currentProxy();
         // 3 return
         return Result.ok(orderId);
     }
+
+//    @Override
+//    public Result seckillVoucher(Long voucherId) {
+//        Long userId = UserHolder.getUser().getId();
+//        // 1. execute luas script
+//        Long result = stringRedisTemplate.execute(
+//                SECKILL_SCRIPT,
+//                Collections.emptyList(),
+//                voucherId.toString(), userId.toString()
+//        );
+//        // 2. check if the result of script is 0 or not
+//        int r = result.intValue();
+//        if (r != 0) {
+//            // 2.1 not 0, have no purchase access
+//            return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
+//        }
+//        // 2.2 0, have purchase access, put the order info into blocking queue
+//        long orderId = redisIDWorker.nextId("order:");
+//        // TODO blocking queue
+//        // 2.3. create order
+//        VoucherOrder voucherOrder = new VoucherOrder();
+//        // 2.4 set order id
+//        voucherOrder.setId(orderId);
+//        // 2.5 set user id
+//        voucherOrder.setUserId(userId);
+//        // 2.6 set voucher id
+//        voucherOrder.setVoucherId(voucherId);
+//        // 2.7 add it into blocking queue
+//        orderTasks.add(voucherOrder);
+//        // 2.8 get the proxy object
+//        proxy = (IVoucherOrderService) AopContext.currentProxy();
+//        // 3 return
+//        return Result.ok(orderId);
+//    }
 //    public Result seckillVoucher(Long voucherId) {
 //        // 1. query the voucher
 //        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
