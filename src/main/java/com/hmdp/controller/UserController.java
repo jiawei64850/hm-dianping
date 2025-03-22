@@ -1,9 +1,11 @@
 package com.hmdp.controller;
 
 
+import cn.hutool.core.bean.BeanUtil;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
+import com.hmdp.entity.User;
 import com.hmdp.entity.UserInfo;
 import com.hmdp.service.IUserInfoService;
 import com.hmdp.service.IUserService;
@@ -21,7 +23,7 @@ import javax.servlet.http.HttpSession;
  * </p>
  *
  * @author jiawei
- * @since 18/03/2025
+ * @since 22/03/2025
  */
 @Slf4j
 @RestController
@@ -60,7 +62,7 @@ public class UserController {
      */
     @PostMapping("/logout")
     public Result logout(HttpServletRequest request){
-        // TODO 实现登出功能
+        // 实现登出功能
         return userService.logout(request);
     }
 
@@ -83,5 +85,15 @@ public class UserController {
         info.setUpdateTime(null);
         // 返回
         return Result.ok(info);
+    }
+
+    @GetMapping("/{id}")
+    public Result queryUserById(@PathVariable("id") Long userId){
+        User user = userService.getById(userId);
+        if (user == null) {
+            return Result.ok();
+        }
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+        return Result.ok(userDTO);
     }
 }

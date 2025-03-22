@@ -21,7 +21,7 @@ import java.util.List;
  * </p>
  *
  * @author jiawei
- * @since 21/03/2025
+ * @since 22/03/2025
  */
 @RestController
 @RequestMapping("/blog")
@@ -68,5 +68,23 @@ public class BlogController {
     @GetMapping("/{id}")
     public Result queryBlogById(@PathVariable Long id) {
         return blogService.queryBlogById(id);
+    }
+
+    @GetMapping("/likes/{id}")
+    public Result queryBlogLikes(@PathVariable Long id) {
+        return blogService.queryBlogLikes(id);
+    }
+
+    @GetMapping("/of/user")
+    public Result queryBlogByUserId(
+            @RequestParam(value = "current", defaultValue = "1") Integer current,
+            @RequestParam("id") Long userId) {
+        // query page based on user
+        Page<Blog> page = blogService.query()
+                .eq("user_id", userId)
+                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+        // get the data of current page
+        List<Blog> records = page.getRecords();
+        return Result.ok(records);
     }
 }

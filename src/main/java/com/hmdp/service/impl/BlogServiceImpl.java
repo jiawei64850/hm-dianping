@@ -1,8 +1,11 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.BooleanUtil;
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
@@ -15,7 +18,10 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.hmdp.utils.RedisConstants.BLOG_LIKED_KEY;
 
@@ -74,28 +80,39 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     private void isLikedBlog(Blog blog) {
+        UserDTO user = UserHolder.getUser();
+        // without login, no need to query whether like or not
+        if (user == null) {
+            return;
+        }
         // 1. get the current user
         Long userId = UserHolder.getUser().getId();
         // 2. check the user like or not
         String key = BLOG_LIKED_KEY + blog.getId();
-        Boolean IsMember = stringRedisTemplate.opsForSet().isMember(key, userId.toString());
-        blog.setIsLike(BooleanUtil.isTrue(IsMember));
+        // Boolean IsMember = stringRedisTemplate.opsForSet().isMember(key, userId.toString());
+        // blog.setIsLike(BooleanUtil.isTrue(IsMember));
+        Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
+        blog.setIsLike(score != null);
     }
 
     @Override
     public Result likeBlog(Long id) {
+
         // 1. get the current user
         Long userId = UserHolder.getUser().getId();
         // 2. check the user like or not
         String key = BLOG_LIKED_KEY + id;
-        Boolean IsMember = stringRedisTemplate.opsForSet().isMember(key, userId.toString());
-        if (BooleanUtil.isFalse(IsMember)) {
+        // Boolean IsMember = stringRedisTemplate.opsForSet().isMember(key, userId.toString());
+        Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
+        if (score == null) { // BooleanUtil.isFalse(IsMember)
             // 3. could like if not
             // 3.1 update database
             boolean isSuccess = update().setSql("liked = liked + 1").eq("id", id).update();
             // 3.2 put user into redis
             if (isSuccess) {
-                stringRedisTemplate.opsForSet().add(key, userId.toString());
+                // stringRedisTemplate.opsForSet().add(key, userId.toString());
+                stringRedisTemplate.opsForZSet().add(key, userId.toString(), System.currentTimeMillis());
+
             }
         } else {
             // 4. cancel like if it has liked
@@ -103,9 +120,34 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             boolean isSuccess = update().setSql("liked = liked - 1").eq("id", id).update();
             // 4.2 remove user from redis
             if (isSuccess) {
-                stringRedisTemplate.opsForSet().remove(key, userId.toString());
+                // stringRedisTemplate.opsForSet().remove(key, userId.toString());
+                stringRedisTemplate.opsForZSet().remove(key, userId.toString());
             }
         }
         return Result.ok();
+    }
+
+    @Override
+    public Result queryBlogLikes(Long id) {
+
+        // 1. query the user based on top 5 likes number
+        String key = BLOG_LIKED_KEY + id;
+        // 2. parse the user id based on likes record
+        Set<String> top5 = stringRedisTemplate.opsForZSet().range(key, 0, 4);
+        if (top5 == null) {
+            return Result.ok(Collections.emptyList());
+        }
+        // 3. query the user based on user id
+        List<Long> ids = top5.stream().map(Long::valueOf).collect(Collectors.toList());
+        String idStr = StrUtil.join(",", ids);
+        List<UserDTO> userDTOs = userService.query()
+                .in("id", ids)
+                .last("ORDER BY FILED: {" + idStr + ")")
+                .list()
+                .stream()
+                .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
+                .collect(Collectors.toList());
+        // 4. return
+        return Result.ok(userDTOs);
     }
 }
