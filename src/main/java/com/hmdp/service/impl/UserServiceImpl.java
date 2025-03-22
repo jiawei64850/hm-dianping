@@ -16,13 +16,17 @@ import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -143,5 +147,64 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         UserHolder.removeUser();
         return Result.ok();
 
+    }
+
+    @Override
+    public Result sign() {
+        // 1. get current user
+        Long userId = UserHolder.getUser().getId();
+        // 2. get current date
+        LocalDateTime now = LocalDateTime.now();
+        // 3. splice the string
+        String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
+        String key = USER_SIGN_KEY + userId + keySuffix;
+        // 4. get the current date of mouth
+        int dayOfMonth = now.getDayOfMonth();
+        // 5. put it into redis
+        stringRedisTemplate.opsForValue().setBit(key, dayOfMonth - 1, true);
+        return Result.ok();
+    }
+
+    @Override
+    public Result signCount() {
+        // 1. get current user
+        Long userId = UserHolder.getUser().getId();
+        // 2. get current date
+        LocalDateTime now = LocalDateTime.now();
+        // 3. splice the string
+        String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
+        String key = USER_SIGN_KEY + userId + keySuffix;
+        // 4. get the current date of mouth
+        int dayOfMonth = now.getDayOfMonth();
+        // 5. get the checkin record until the current date of mouth, which is a decimal
+        List<Long> result = stringRedisTemplate.opsForValue().bitField(
+                key,
+                BitFieldSubCommands.create()
+                        .get(BitFieldSubCommands.BitFieldType.unsigned(dayOfMonth))
+                        .valueAt(0)
+        );
+        if (result == null || result.size() == 0) {
+            return Result.ok(0);
+        }
+        Long num = result.get(0);
+        if (num == null || num == 0) {
+            return Result.ok(0);
+        }
+        // 6. for loop to get the count
+        int count = 0;
+        while (true) {
+            // 6.1 make this number "&" bitwise operation with 1 to get the last digit of it
+            // 6.2 check this digit is 0 or not
+            if ((num & 1) == 0) {
+                // 6.3 0 is non-check-in status
+                break;
+            } else {
+                // 6.4 1 is check-in status
+                count++;
+            }
+            // 6.5 move 1 digit to right side to remove the last digit
+            num >>>= 1;
+        }
+        return Result.ok(count);
     }
 }
